@@ -182,18 +182,18 @@ def browser(task):
         return ChatOpenAI(**kwargs)
 
     def _browser_kwargs():  # 无头模式；兼容 0.3 / 0.2 的浏览器配置 API
-        headless = os.environ.get("BROWSER_HEADLESS", "1") == "1"
-        for attempt in ("new", "old"):
-            try:
-                if attempt == "new":
-                    from browser_use import BrowserProfile, BrowserSession
-                    return {"browser_session": BrowserSession(
-                        browser_profile=BrowserProfile(headless=headless))}
-                from browser_use import Browser, BrowserConfig
-                return {"browser": Browser(config=BrowserConfig(headless=headless))}
-            except ImportError:
-                continue
-        return {}  # 更旧的版本使用默认配置
+        from browser_use import Browser, BrowserConfig
+        from browser_use.browser.context import BrowserContextConfig
+        return {
+            "browser": Browser(
+                config=BrowserConfig(
+                    headless=False,   # 第一次先有头，手动登录
+                    new_context_config=BrowserContextConfig(
+                        cookies_file="./cookies.json",   # ← 登录态自动存这里
+                    )
+                )
+            )
+        }
 
     async def _run():
         extra = {"use_vision": False, **_browser_kwargs()}  # GLM 文本模型关闭视觉
