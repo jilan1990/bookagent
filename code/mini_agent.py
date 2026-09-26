@@ -145,6 +145,77 @@ def list_dir(path="."):
     ]
     return "\n".join(entries) or "（空目录）"
 
+BROWSER_MAX_STEPS = 15     # 浏览器任务最多执行的动作步数
+BROWSER_TIMEOUT = 300      # 浏览器任务超时（秒）
+
+@tool("用浏览器完成一个网页任务（打开网页、搜索、点击、填表、提取信息等）并返回最终结果。"
+      "当需要访问互联网、查询实时信息或操作网页时调用。任务通常需要 1-3 分钟，"
+      "一次只描述一个明确目标，复杂需求应拆成多次调用。", {
+    "type": "object",
+    "properties": {
+        "task": {
+            "type": "string",
+            "description": "要完成的网页任务，如：打开 baidu.com 搜索'北京今天天气'，返回当前温度",
+        },
+    },
+    "required": ["task"],
+})
+def browser(task):
+    try:  # 延迟导入：未安装时其他工具不受影响
+        import inspect
+        import asyncio
+        from browser_use import Agent
+    except ImportError:
+        return ("错误: 未安装 browser-use，请先执行:\n"
+                "pip install browser-use\n"
+                "playwright install chromium")
+
+    def _make_llm():  # 复用智谱 OpenAI 兼容接口；兼容新旧版 browser-use 的 LLM 封装
+        kwargs = dict(base_url=os.environ["DEEPSEEK_BASE_URL"],
+                      api_key=os.environ["DEEPSEEK_API_KEY"],
+                      model=os.environ["DEEPSEEK_MODEL"])
+        try:
+            from langchain_openai import ChatOpenAI  # 旧版依赖
+            kwargs["temperature"] = 0
+        except ImportError:
+            from browser_use import ChatOpenAI  # browser-use >= 0.3 自带
+        return ChatOpenAI(**kwargs)
+
+    def _browser_kwargs():  # 无头模式；兼容 0.3 / 0.2 的浏览器配置 API
+        headless = os.environ.get("BROWSER_HEADLESS", "1") == "1"
+        for attempt in ("new", "old"):
+            try:
+                if attempt == "new":
+                    from browser_use import BrowserProfile, BrowserSession
+                    return {"browser_session": BrowserSession(
+                        browser_profile=BrowserProfile(headless=headless))}
+                from browser_use import Browser, BrowserConfig
+                return {"browser": Browser(config=BrowserConfig(headless=headless))}
+            except ImportError:
+                continue
+        return {}  # 更旧的版本使用默认配置
+
+    async def _run():
+        extra = {"use_vision": False, **_browser_kwargs()}  # GLM 文本模型关闭视觉
+        sig = inspect.signature(Agent)
+        extra = {k: v for k, v in extra.items() if k in sig.parameters}
+        agent = Agent(task=task, llm=_make_llm(), **extra)
+        try:
+            history = await agent.run()
+            return history.final_result()
+        finally:
+            # 显式关闭浏览器，避免进程挂住
+            if hasattr(agent, 'browser') and agent.browser:
+                await agent.browser.close()
+
+    try:
+        result = asyncio.run(asyncio.wait_for(_run(), timeout=BROWSER_TIMEOUT))
+        return str(result) if result else "浏览器任务未产生最终结果（可能未完成），请拆小任务后重试"
+    except asyncio.TimeoutError:
+        return f"错误: 浏览器任务超过 {BROWSER_TIMEOUT} 秒未完成，请拆小任务后重试"
+    except Exception as exc:
+        return f"浏览器任务执行失败: {exc}"
+
 def tools_spec():
     """按智谱 function calling 的 tools 参数格式生成工具 schema 列表"""
     return [
